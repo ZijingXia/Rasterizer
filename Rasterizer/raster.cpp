@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <chrono>
 
-#include <cmath>
 #include "matrix.h"
 #include "colour.h"
 #include "mesh.h"
@@ -23,44 +22,6 @@
 // - camera: Matrix representing the camera's transformation.
 // - L: Light object representing the lighting parameters.
 
-// SoA格式的顶点缓冲区（按分量存储，提升缓存命中率）
-struct VertexBufferSoA {
-    std::vector<float> px, py, pz, pw; // 位置分量
-    std::vector<float> nx, ny, nz;     // 法向量分量
-    std::vector<colour> rgb;           // 颜色
-
-    // 从Mesh初始化SoA
-    void fromMesh(const Mesh& mesh) {
-        size_t n = mesh.vertices.size();
-        px.resize(n); py.resize(n); pz.resize(n); pw.resize(n);
-        nx.resize(n); ny.resize(n); nz.resize(n);
-        rgb.resize(n);
-
-        for (size_t i = 0; i < n; i++) {
-            px[i] = mesh.vertices[i].p.x;
-            py[i] = mesh.vertices[i].p.y;
-            pz[i] = mesh.vertices[i].p.z;
-            pw[i] = mesh.vertices[i].p.w;
-            nx[i] = mesh.vertices[i].normal.x;
-            ny[i] = mesh.vertices[i].normal.y;
-            nz[i] = mesh.vertices[i].normal.z;
-            rgb[i] = mesh.vertices[i].rgb;
-        }
-    }
-};
-
-// 给Mesh添加SoA缓冲区（提前初始化，避免每次渲染重构）
-struct MeshOpt : public Mesh {
-    VertexBufferSoA soa_buffer;
-    bool soa_initialized = false;
-
-    void initSoA() {
-        if (!soa_initialized) {
-            soa_buffer.fromMesh(*this);
-            soa_initialized = true;
-        }
-    }
-};
 
 //============================
 //顶点处理
@@ -68,8 +29,12 @@ struct MeshOpt : public Mesh {
 
 void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
 {
+
+    mesh->ensureSoABuffer();
+    VertexBufferSoA& soa = mesh->soaBuffer;
+
     matrix p = renderer.perspective * camera * mesh->world;
-    std::vector<Vertex> transformed(mesh->vertices.size());
+    std::vector<Vertex> transformed(soa.px.size());
 
     // ===== 优化1：提前缓存常量 =====
     const int canvas_width = renderer.canvas.getWidth();
@@ -79,20 +44,23 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
     const float one = 1.0f;
 
     // 顶点变换阶段
-    for (size_t i = 0; i < mesh->vertices.size(); i++)
+    for (size_t i = 0; i < soa.px.size(); i++)
     {
-        transformed[i].p = p * mesh->vertices[i].p;
+        vec4 pos(soa.px[i], soa.py[i], soa.pz[i], soa.pw[i]);
+        vec4 normal(soa.nx[i], soa.ny[i], soa.nz[i], 0.0f);
+
+        transformed[i].p = p * pos;
         transformed[i].p.divideW();
 
         // ===== 优化2：法向量变换只算一次（复用mesh->world） =====
-        transformed[i].normal = mesh->world * mesh->vertices[i].normal;
+        transformed[i].normal = mesh->world * normal;
         transformed[i].normal.normalise();
 
         // ===== 优化3：简化屏幕映射计算（减少算术运算） =====
         transformed[i].p[0] = (transformed[i].p[0] + one) * half_width;
         transformed[i].p[1] = canvas_height - (transformed[i].p[1] + one) * half_height;
 
-        transformed[i].rgb = mesh->vertices[i].rgb;
+        transformed[i].rgb = soa.rgb[i];
     }
 
     // 三角形阶段

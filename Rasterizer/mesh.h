@@ -25,6 +25,57 @@ struct triIndices {
     }
 };
 
+@@ - 3, 84 + 3, 127 @@
+#include <vector>
+#include <iostream>
+#include "vec4.h"
+#include "matrix.h"
+#include "colour.h"
+
+// Represents a vertex in a 3D mesh, including its position, normal, and color
+struct Vertex {
+    vec4 p;         // Position of the vertex in 3D space
+    vec4 normal;    // Normal vector for the vertex
+    colour rgb;     // Color of the vertex
+};
+
+// Stores indices of vertices that form a triangle in a mesh
+struct triIndices {
+    unsigned int v[3]; // Indices into the vertex array
+
+    // Constructor to initialize the indices of a triangle
+    triIndices(unsigned int v1, unsigned int v2, unsigned int v3) {
+        v[0] = v1;
+        v[1] = v2;
+        v[2] = v3;
+    }
+};
+
+// 按分量存储的顶点缓冲区（SoA）
+struct VertexBufferSoA {
+    std::vector<float> px, py, pz, pw;
+    std::vector<float> nx, ny, nz;
+    std::vector<colour> rgb;
+
+    void fromVertices(const std::vector<Vertex>& vertices) {
+        const size_t n = vertices.size();
+        px.resize(n); py.resize(n); pz.resize(n); pw.resize(n);
+        nx.resize(n); ny.resize(n); nz.resize(n);
+        rgb.resize(n);
+
+        for (size_t i = 0; i < n; ++i) {
+            px[i] = vertices[i].p.x;
+            py[i] = vertices[i].p.y;
+            pz[i] = vertices[i].p.z;
+            pw[i] = vertices[i].p.w;
+            nx[i] = vertices[i].normal.x;
+            ny[i] = vertices[i].normal.y;
+            nz[i] = vertices[i].normal.z;
+            rgb[i] = vertices[i].rgb;
+        }
+    }
+};
+
 // Class representing a 3D mesh made up of vertices and triangles
 class Mesh {
 public:
@@ -34,6 +85,10 @@ public:
     matrix world;     // Transformation matrix for the mesh
     std::vector<Vertex> vertices;       // List of vertices in the mesh
     std::vector<triIndices> triangles;  // List of triangles in the mesh
+
+    // SoA缓存：渲染阶段可直接按分量读取
+    VertexBufferSoA soaBuffer;
+    bool soaDirty = true;
 
     // Set the uniform color and reflection coefficients for the mesh
     // Input Variables:
@@ -59,6 +114,20 @@ public:
     void addVertex(const vec4& vertex, const vec4& normal) {
         Vertex v = { vertex, normal, col };
         vertices.push_back(v);
+        soaDirty = true;
+    }
+
+    // 手动标记SoA缓存失效（当外部直接改写vertices时调用）
+    void markSoADirty() {
+        soaDirty = true;
+    }
+
+    // 确保SoA缓存可用于渲染
+    void ensureSoABuffer() {
+        if (soaDirty || soaBuffer.px.size() != vertices.size()) {
+            soaBuffer.fromVertices(vertices);
+            soaDirty = false;
+        }
     }
 
     // Add a triangle to the mesh
