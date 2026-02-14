@@ -14,6 +14,7 @@
 #include "RNG.h"
 #include "light.h"
 #include "triangle.h"
+#include <immintrin.h>
 
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
@@ -44,7 +45,78 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
     const float one = 1.0f;
 
     // 顶点变换阶段
-    for (size_t i = 0; i < soa.px.size(); i++)
+    const size_t vertexCount = soa.px.size();
+    const size_t simdCount = vertexCount & ~static_cast<size_t>(3);
+
+    const __m128 one4 = _mm_set1_ps(one);
+    const __m128 halfWidth4 = _mm_set1_ps(half_width);
+    const __m128 halfHeight4 = _mm_set1_ps(half_height);
+    const __m128 canvasHeight4 = _mm_set1_ps(static_cast<float>(canvas_height));
+
+    const __m128 p00 = _mm_set1_ps(p.a[0]), p01 = _mm_set1_ps(p.a[1]), p02 = _mm_set1_ps(p.a[2]), p03 = _mm_set1_ps(p.a[3]);
+    const __m128 p10 = _mm_set1_ps(p.a[4]), p11 = _mm_set1_ps(p.a[5]), p12 = _mm_set1_ps(p.a[6]), p13 = _mm_set1_ps(p.a[7]);
+    const __m128 p20 = _mm_set1_ps(p.a[8]), p21 = _mm_set1_ps(p.a[9]), p22 = _mm_set1_ps(p.a[10]), p23 = _mm_set1_ps(p.a[11]);
+    const __m128 p30 = _mm_set1_ps(p.a[12]), p31 = _mm_set1_ps(p.a[13]), p32 = _mm_set1_ps(p.a[14]), p33 = _mm_set1_ps(p.a[15]);
+
+    const __m128 w00 = _mm_set1_ps(mesh->world.a[0]), w01 = _mm_set1_ps(mesh->world.a[1]), w02 = _mm_set1_ps(mesh->world.a[2]);
+    const __m128 w10 = _mm_set1_ps(mesh->world.a[4]), w11 = _mm_set1_ps(mesh->world.a[5]), w12 = _mm_set1_ps(mesh->world.a[6]);
+    const __m128 w20 = _mm_set1_ps(mesh->world.a[8]), w21 = _mm_set1_ps(mesh->world.a[9]), w22 = _mm_set1_ps(mesh->world.a[10]);
+
+    for (size_t i = 0; i < simdCount; i += 4)
+    {
+        const __m128 px = _mm_loadu_ps(&soa.px[i]);
+        const __m128 py = _mm_loadu_ps(&soa.py[i]);
+        const __m128 pz = _mm_loadu_ps(&soa.pz[i]);
+        const __m128 pw = _mm_loadu_ps(&soa.pw[i]);
+
+        __m128 tx = _mm_add_ps(_mm_add_ps(_mm_mul_ps(p00, px), _mm_mul_ps(p01, py)), _mm_add_ps(_mm_mul_ps(p02, pz), _mm_mul_ps(p03, pw)));
+        __m128 ty = _mm_add_ps(_mm_add_ps(_mm_mul_ps(p10, px), _mm_mul_ps(p11, py)), _mm_add_ps(_mm_mul_ps(p12, pz), _mm_mul_ps(p13, pw)));
+        __m128 tz = _mm_add_ps(_mm_add_ps(_mm_mul_ps(p20, px), _mm_mul_ps(p21, py)), _mm_add_ps(_mm_mul_ps(p22, pz), _mm_mul_ps(p23, pw)));
+        __m128 tw = _mm_add_ps(_mm_add_ps(_mm_mul_ps(p30, px), _mm_mul_ps(p31, py)), _mm_add_ps(_mm_mul_ps(p32, pz), _mm_mul_ps(p33, pw)));
+
+        const __m128 invW = _mm_div_ps(one4, tw);
+        tx = _mm_mul_ps(tx, invW);
+        ty = _mm_mul_ps(ty, invW);
+        tz = _mm_mul_ps(tz, invW);
+
+        tx = _mm_mul_ps(_mm_add_ps(tx, one4), halfWidth4);
+        ty = _mm_sub_ps(canvasHeight4, _mm_mul_ps(_mm_add_ps(ty, one4), halfHeight4));
+
+        float sx[4], sy[4], sz[4];
+        _mm_storeu_ps(sx, tx);
+        _mm_storeu_ps(sy, ty);
+        _mm_storeu_ps(sz, tz);
+
+        const __m128 nx = _mm_loadu_ps(&soa.nx[i]);
+        const __m128 ny = _mm_loadu_ps(&soa.ny[i]);
+        const __m128 nz = _mm_loadu_ps(&soa.nz[i]);
+
+        __m128 tnx = _mm_add_ps(_mm_mul_ps(w00, nx), _mm_add_ps(_mm_mul_ps(w01, ny), _mm_mul_ps(w02, nz)));
+        __m128 tny = _mm_add_ps(_mm_mul_ps(w10, nx), _mm_add_ps(_mm_mul_ps(w11, ny), _mm_mul_ps(w12, nz)));
+        __m128 tnz = _mm_add_ps(_mm_mul_ps(w20, nx), _mm_add_ps(_mm_mul_ps(w21, ny), _mm_mul_ps(w22, nz)));
+
+        __m128 nLen2 = _mm_add_ps(_mm_mul_ps(tnx, tnx), _mm_add_ps(_mm_mul_ps(tny, tny), _mm_mul_ps(tnz, tnz)));
+        __m128 invNLen = _mm_div_ps(one4, _mm_sqrt_ps(nLen2));
+
+        tnx = _mm_mul_ps(tnx, invNLen);
+        tny = _mm_mul_ps(tny, invNLen);
+        tnz = _mm_mul_ps(tnz, invNLen);
+
+        float nnx[4], nny[4], nnz[4];
+        _mm_storeu_ps(nnx, tnx);
+        _mm_storeu_ps(nny, tny);
+        _mm_storeu_ps(nnz, tnz);
+
+        for (size_t lane = 0; lane < 4; ++lane)
+        {
+            const size_t idx = i + lane;
+            transformed[idx].p = vec4(sx[lane], sy[lane], sz[lane], 1.0f);
+            transformed[idx].normal = vec4(nnx[lane], nny[lane], nnz[lane], 0.0f);
+            transformed[idx].rgb = soa.rgb[idx];
+        }
+    }
+
+    for (size_t i = simdCount; i < vertexCount; ++i)
     {
         vec4 pos(soa.px[i], soa.py[i], soa.pz[i], soa.pw[i]);
         vec4 normal(soa.nx[i], soa.ny[i], soa.nz[i], 0.0f);
@@ -52,11 +124,9 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
         transformed[i].p = p * pos;
         transformed[i].p.divideW();
 
-        // ===== 优化2：法向量变换只算一次（复用mesh->world） =====
         transformed[i].normal = mesh->world * normal;
         transformed[i].normal.normalise();
 
-        // ===== 优化3：简化屏幕映射计算（减少算术运算） =====
         transformed[i].p[0] = (transformed[i].p[0] + one) * half_width;
         transformed[i].p[1] = canvas_height - (transformed[i].p[1] + one) * half_height;
 

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include "vec4.h"
+#include <immintrin.h>
 
 // Matrix class for 4x4 transformation matrices
 class matrix {
@@ -36,10 +37,21 @@ public:
     // Returns the resulting transformed vec4
     vec4 operator * (const vec4& v) const {
         vec4 result;
-        result[0] = a[0] * v[0] + a[1] * v[1] + a[2] * v[2] + a[3] * v[3];
-        result[1] = a[4] * v[0] + a[5] * v[1] + a[6] * v[2] + a[7] * v[3];
-        result[2] = a[8] * v[0] + a[9] * v[1] + a[10] * v[2] + a[11] * v[3];
-        result[3] = a[12] * v[0] + a[13] * v[1] + a[14] * v[2] + a[15] * v[3];
+        const __m128 vv = _mm_loadu_ps(v.v);
+
+        auto dot4 = [&](const float* row) {
+            __m128 mul = _mm_mul_ps(_mm_loadu_ps(row), vv);
+            __m128 shuf = _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(2, 3, 0, 1));
+            __m128 sums = _mm_add_ps(mul, shuf);
+            shuf = _mm_movehl_ps(shuf, sums);
+            sums = _mm_add_ss(sums, shuf);
+            return _mm_cvtss_f32(sums);
+            };
+
+        result[0] = dot4(&a[0]);
+        result[1] = dot4(&a[4]);
+        result[2] = dot4(&a[8]);
+        result[3] = dot4(&a[12]);
         return result;
     }
 
