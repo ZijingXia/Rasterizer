@@ -25,32 +25,6 @@ struct triIndices {
     }
 };
 
-@@ - 3, 84 + 3, 127 @@
-#include <vector>
-#include <iostream>
-#include "vec4.h"
-#include "matrix.h"
-#include "colour.h"
-
-// Represents a vertex in a 3D mesh, including its position, normal, and color
-struct Vertex {
-    vec4 p;         // Position of the vertex in 3D space
-    vec4 normal;    // Normal vector for the vertex
-    colour rgb;     // Color of the vertex
-};
-
-// Stores indices of vertices that form a triangle in a mesh
-struct triIndices {
-    unsigned int v[3]; // Indices into the vertex array
-
-    // Constructor to initialize the indices of a triangle
-    triIndices(unsigned int v1, unsigned int v2, unsigned int v3) {
-        v[0] = v1;
-        v[1] = v2;
-        v[2] = v3;
-    }
-};
-
 // 按分量存储的顶点缓冲区（SoA）
 struct VertexBufferSoA {
     std::vector<float> px, py, pz, pw;
