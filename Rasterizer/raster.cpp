@@ -35,7 +35,6 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
     VertexBufferSoA& soa = mesh->soaBuffer;
 
     matrix p = renderer.perspective * camera * mesh->world;
-    std::vector<Vertex> transformed(soa.px.size());
 
     // ===== 优化1：提前缓存常量 =====
     const int canvas_width = renderer.canvas.getWidth();
@@ -47,6 +46,14 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
     // 顶点变换阶段
     const size_t vertexCount = soa.px.size();
     const size_t simdCount = vertexCount & ~static_cast<size_t>(3);
+
+    // 使用SoA暂存变换结果，避免SIMD结果回写到临时标量数组后再散写到AoS
+    std::vector<float> screenX(vertexCount);
+    std::vector<float> screenY(vertexCount);
+    std::vector<float> depthZ(vertexCount);
+    std::vector<float> normalX(vertexCount);
+    std::vector<float> normalY(vertexCount);
+    std::vector<float> normalZ(vertexCount);
 
     const __m128 one4 = _mm_set1_ps(one);
     const __m128 halfWidth4 = _mm_set1_ps(half_width);
@@ -82,10 +89,9 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
         tx = _mm_mul_ps(_mm_add_ps(tx, one4), halfWidth4);
         ty = _mm_sub_ps(canvasHeight4, _mm_mul_ps(_mm_add_ps(ty, one4), halfHeight4));
 
-        float sx[4], sy[4], sz[4];
-        _mm_storeu_ps(sx, tx);
-        _mm_storeu_ps(sy, ty);
-        _mm_storeu_ps(sz, tz);
+        _mm_storeu_ps(&screenX[i], tx);
+        _mm_storeu_ps(&screenY[i], ty);
+        _mm_storeu_ps(&depthZ[i], tz);
 
         const __m128 nx = _mm_loadu_ps(&soa.nx[i]);
         const __m128 ny = _mm_loadu_ps(&soa.ny[i]);
@@ -102,18 +108,9 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
         tny = _mm_mul_ps(tny, invNLen);
         tnz = _mm_mul_ps(tnz, invNLen);
 
-        float nnx[4], nny[4], nnz[4];
-        _mm_storeu_ps(nnx, tnx);
-        _mm_storeu_ps(nny, tny);
-        _mm_storeu_ps(nnz, tnz);
-
-        for (size_t lane = 0; lane < 4; ++lane)
-        {
-            const size_t idx = i + lane;
-            transformed[idx].p = vec4(sx[lane], sy[lane], sz[lane], 1.0f);
-            transformed[idx].normal = vec4(nnx[lane], nny[lane], nnz[lane], 0.0f);
-            transformed[idx].rgb = soa.rgb[idx];
-        }
+        _mm_storeu_ps(&normalX[i], tnx);
+        _mm_storeu_ps(&normalY[i], tny);
+        _mm_storeu_ps(&normalZ[i], tnz);
     }
 
     for (size_t i = simdCount; i < vertexCount; ++i)
@@ -121,16 +118,19 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
         vec4 pos(soa.px[i], soa.py[i], soa.pz[i], soa.pw[i]);
         vec4 normal(soa.nx[i], soa.ny[i], soa.nz[i], 0.0f);
 
-        transformed[i].p = p * pos;
-        transformed[i].p.divideW();
+        vec4 transformedPos = p * pos;
+        transformedPos.divideW();
 
-        transformed[i].normal = mesh->world * normal;
-        transformed[i].normal.normalise();
+        vec4 transformedNormal = mesh->world * normal;
+        transformedNormal.normalise();
 
-        transformed[i].p[0] = (transformed[i].p[0] + one) * half_width;
-        transformed[i].p[1] = canvas_height - (transformed[i].p[1] + one) * half_height;
+        screenX[i] = (transformedPos[0] + one) * half_width;
+        screenY[i] = canvas_height - (transformedPos[1] + one) * half_height;
+        depthZ[i] = transformedPos[2];
 
-        transformed[i].rgb = soa.rgb[i];
+        normalX[i] = transformedNormal[0];
+        normalY[i] = transformedNormal[1];
+        normalZ[i] = transformedNormal[2];
     }
 
     // 三角形阶段
@@ -138,16 +138,19 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
     const float z_threshold = 1.0f;
     for (triIndices& ind : mesh->triangles)
     {
-        Vertex& v0 = transformed[ind.v[0]];
-        Vertex& v1 = transformed[ind.v[1]];
-        Vertex& v2 = transformed[ind.v[2]];
+        const size_t i0 = ind.v[0];
+        const size_t i1 = ind.v[1];
+        const size_t i2 = ind.v[2];
 
-        // 优化：用直接比较代替fabs（z范围是[-1,1]，等价）
-        if (v0.p[2] < -z_threshold || v0.p[2] > z_threshold ||
-            v1.p[2] < -z_threshold || v1.p[2] > z_threshold ||
-            v2.p[2] < -z_threshold || v2.p[2] > z_threshold)
+        if (depthZ[i0] < -z_threshold || depthZ[i0] > z_threshold ||
+            depthZ[i1] < -z_threshold || depthZ[i1] > z_threshold ||
+            depthZ[i2] < -z_threshold || depthZ[i2] > z_threshold)
             continue;
 
+        Vertex v0{ vec4(screenX[i0], screenY[i0], depthZ[i0], 1.0f), vec4(normalX[i0], normalY[i0], normalZ[i0], 0.0f), soa.rgb[i0] };
+        Vertex v1{ vec4(screenX[i1], screenY[i1], depthZ[i1], 1.0f), vec4(normalX[i1], normalY[i1], normalZ[i1], 0.0f), soa.rgb[i1] };
+        Vertex v2{ vec4(screenX[i2], screenY[i2], depthZ[i2], 1.0f), vec4(normalX[i2], normalY[i2], normalZ[i2], 0.0f), soa.rgb[i2] };
+        
         triangle tri(v0, v1, v2);
         tri.draw(renderer, L, mesh->ka, mesh->kd);
     }

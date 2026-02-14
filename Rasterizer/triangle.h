@@ -42,6 +42,7 @@ class triangle {
     Vertex v[3];       // Vertices of the triangle
     float area;        // Area of the triangle
     colour col[3];     // Colors for each vertex of the triangle
+    float invArea;     // Reciprocal of area for faster barycentric computation
 
 public:
     // Constructor initializes the triangle with three vertices
@@ -56,6 +57,7 @@ public:
         vec2D e1 = vec2D(v[1].p - v[0].p);
         vec2D e2 = vec2D(v[2].p - v[0].p);
         area = std::fabs(e1.x * e2.y - e1.y * e2.x);
+        invArea = (area > 0.0f) ? (1.0f / area) : 0.0f;
     }
 
     // Helper function to compute the cross product for barycentric coordinates
@@ -75,9 +77,9 @@ public:
     // - alpha, beta, gamma: Barycentric coordinates of the point
     // Returns true if the point is inside the triangle, false otherwise
     bool getCoordinates(vec2D p, float& alpha, float& beta, float& gamma) {
-        alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) / area;
-        beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) / area;
-        gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) / area;
+        alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) * invArea;
+        beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) * invArea;
+        gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) * invArea;
 
         if (alpha < 0.f || beta < 0.f || gamma < 0.f) return false;
         return true;
@@ -107,9 +109,17 @@ public:
         // Skip very small triangles
         if (area < 1.f) return;
 
+        const int minX = static_cast<int>(minV.x);
+        const int minY = static_cast<int>(minV.y);
+        const int maxX = static_cast<int>(std::ceil(maxV.x));
+        const int maxY = static_cast<int>(std::ceil(maxV.y));
+
+        vec4 lightDir = L.omega_i;
+        lightDir.normalise();
+
         // Iterate over the bounding box and check each pixel
-        for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
-            for (int x = (int)(minV.x); x < (int)ceil(maxV.x); x++) {
+        for (int y = minY; y < maxY; y++) {
+            for (int x = minX; x < maxX; x++) {
                 float alpha, beta, gamma;
 
                 // Check if the pixel lies inside the triangle
@@ -124,8 +134,7 @@ public:
                     // Perform Z-buffer test and apply shading
                     if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
                         // typical shader begin
-                        L.omega_i.normalise();
-                        float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
+                        float dot = std::max(vec4::dot(lightDir, normal), 0.0f);
                         colour a = (c * kd) * (L.L * dot) + (L.ambient * ka); // using kd instead of ka for ambient
                         // typical shader end
                         unsigned char r, g, b;
